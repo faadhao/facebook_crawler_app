@@ -2,7 +2,9 @@ version: '3.9'
 
 services:
   web:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     depends_on:
@@ -12,26 +14,119 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - REDIS_HOST=redis
       - SECRET_KEY=mysecret
+      - DEBUG=False
     volumes:
-      - .:/app
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - REDIS_HOST=redis
+      - SECRET_KEY=mysecret
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.celery
+    command: celery -A app.core.celery_app beat --loglevel=info
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - REDIS_HOST=redis
+      - SECRET_KEY=mysecret
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - app-network
 
   db:
-    image: postgres:15
-    restart: always
+    image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
 
   redis:
-    image: redis:7
-    restart: always
+    image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - app-network
 
 volumes:
   pgdata:
+  redisdata:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  app-network:
+    driver: bridge

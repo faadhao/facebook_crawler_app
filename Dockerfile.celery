@@ -1,0 +1,40 @@
+# Celery Worker Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# 安裝依賴
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    gnupg \
+    gcc \
+    g++ \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# 複製依賴文件並安裝
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# 複製應用程式碼
+COPY . .
+
+# 安裝 Playwright 瀏覽器
+RUN playwright install chromium --with-deps
+
+# 設置環境變數
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    C_FORCE_ROOT=true
+
+# 創建非 root 使用者
+RUN useradd -m -u 1000 celeryuser && \
+    chown -R celeryuser:celeryuser /app
+USER celeryuser
+
+# 啟動 Celery Worker
+CMD ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
